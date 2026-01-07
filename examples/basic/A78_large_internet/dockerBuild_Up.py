@@ -37,7 +37,7 @@ class DockerCommandMonitor:
         self.commands = {
             1: f"export DOCKER_BUILDKIT=0; {config_cmd} | {build_xargs} {build_suffix}",
             2: f"export DOCKER_BUILDKIT=0; {config_cmd} | {up_xargs} {up_suffix}"
-        } 
+        }
         
         if command_idx not in self.commands:
             raise ValueError(f"命令编号无效，只能是1或2（1=build，2=up）")
@@ -48,16 +48,14 @@ class DockerCommandMonitor:
         self.running = False
         self.output_dir = os.path.join(os.getcwd(), "output")
         
-        # 生成监控日志文件名
+        # --- 仅保留监控数据的日志 ---
         params_str = f"n{self.batch_size}_p{self.parallel_jobs}_i{self.interval}"
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 监控数据日志 (CSV)
         self.log_filename = f"docker_{self.command_name}_{params_str}_{timestamp}.log"
         self.log_path = os.path.join(os.getcwd(), self.log_filename)
         
-        # 生成命令输出日志文件名 (用于保存原来的终端输出)
-        self.cmd_output_filename = f"docker_cmd_output_{params_str}_{timestamp}.log"
-        self.cmd_output_path = os.path.join(os.getcwd(), self.cmd_output_filename)
-
         self._write_log_header()
 
     def _write_log_header(self):
@@ -70,10 +68,10 @@ class DockerCommandMonitor:
             f.write(f"批次大小 (-n): {self.batch_size}\n")
             f.write(f"并行作业 (-P): {self.parallel_jobs}\n")
             f.write(f"完整命令: {self.command}\n")
-            f.write(f"命令输出日志: {self.cmd_output_filename}\n") # 记录输出去哪了
+            f.write("注意: 命令的标准输出已被丢弃 (DEVNULL)，以节省空间。\n")
             f.write("----------------------------------\n\n")
             
-            # CSV 头部，增加了一列用于备注信息 (Stats)
+            # CSV 头部
             f.write("时间,主进程ID,总CPU使用率(%),总内存占用(MB),系统内存使用率(%),统计信息\n")
 
     def _get_process_resources(self, pid):
@@ -98,7 +96,6 @@ class DockerCommandMonitor:
         except psutil.NoSuchProcess:
             return 0.0, 0.0, psutil.virtual_memory().percent
         except Exception as e:
-            # 静默处理资源获取错误，避免刷屏
             return 0.0, 0.0, psutil.virtual_memory().percent
 
     def _get_docker_count(self):
@@ -108,7 +105,7 @@ class DockerCommandMonitor:
             count_name = ""
             
             if self.command_name == "build":
-                # 统计所有镜像数量 (包括中间层，如果只想统计最终镜像可去掉-a)
+                # 统计所有镜像数量
                 count_cmd = "docker images -q | wc -l"
                 count_name = "Docker Images Count"
             else: # up
@@ -132,7 +129,7 @@ class DockerCommandMonitor:
             current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             pid = self.process.pid
             
-            # 1. 获取资源数据 (根据 interval 频率)
+            # 1. 获取资源数据
             cpu, mem, sys_mem = self._get_process_resources(pid)
             
             # 2. 检查是否需要执行 5分钟一次的统计
@@ -144,15 +141,16 @@ class DockerCommandMonitor:
             
             # 3. 写入日志
             with open(self.log_path, 'a', encoding='utf-8') as f:
-                # 如果有统计信息，这一行的最后一列会有内容，否则为空
                 f.write(f"{current_time_str},{pid},{cpu:.2f},{mem:.2f},{sys_mem:.2f},{stat_info}\n")
             
             time.sleep(self.interval)
 
+    # ----------------------------------------------------------------
+    # 验证逻辑：Build
+    # ----------------------------------------------------------------
     def _verify_build_success(self):
         """验证所有带 'build' 标签的服务是否都已生成镜像"""
-        # 注意：验证过程的输出我们仍然打印到终端，因为这通常是在结束时运行一次，不影响运行时的I/O
-        print("开始从 config --json 获取应构建的镜像列表...")
+        print("开始验证镜像构建结果...")
         try:
             config_cmd = ["docker", "compose", "-f", self.compose_file, "config", "--format", "json"]
             result = subprocess.run(config_cmd, cwd=self.output_dir, capture_output=True, text=True, encoding='utf-8', check=True)
@@ -167,8 +165,7 @@ class DockerCommandMonitor:
             available_images = set(result.stdout.strip().split("\n"))
             
             services = config_data.get("services", {})
-            if not services:
-                return True
+            if not services: return True
 
             missing_services = []
             checked_count = 0
@@ -188,7 +185,7 @@ class DockerCommandMonitor:
                         f"{project_name}_{service_name}:latest"
                     ]
                     if not any(cand in available_images for cand in candidates):
-                         missing_services.append(f"服务 '{service_name}' (期望: {candidates[0]} 或 {candidates[1]})")
+                          missing_services.append(f"服务 '{service_name}' (期望: {candidates[0]} 或 {candidates[1]})")
 
             if checked_count == 0: return True
 
@@ -199,13 +196,114 @@ class DockerCommandMonitor:
                 print(f"❌ 验证失败：以下 {len(missing_services)} 个服务的镜像在本地未找到：")
                 for msg in missing_services[:10]:
                     print(f"  - {msg}")
-                if len(missing_services) > 10:
-                    print(f"  ... 以及其他 {len(missing_services) - 10} 个")
                 return False
 
         except Exception as e:
             print(f"验证错误: {e}")
             return False
+
+    # ----------------------------------------------------------------
+    # 验证逻辑：Up (新增)
+    # ----------------------------------------------------------------
+    def _verify_up_success(self):
+        """
+        验证 'up' 命令结果：
+        1. 检查所有服务容器是否处于 running 状态
+        2. 检查所有定义的 networks 是否存在
+        """
+        print("开始验证容器和网络启动结果...")
+        log_msgs = []
+        is_success = True
+
+        try:
+            # 1. 获取项目配置信息
+            config_cmd = ["docker", "compose", "-f", self.compose_file, "config", "--format", "json"]
+            result = subprocess.run(config_cmd, cwd=self.output_dir, capture_output=True, text=True, encoding='utf-8', check=True)
+            config_data = json.loads(result.stdout)
+            
+            # 获取项目名称（用于推断网络名称）
+            project_name = config_data.get("name")
+            if not project_name:
+                # 如果yaml没定义name，docker默认使用小写目录名
+                project_name = os.path.basename(self.output_dir).lower()
+                # 移除特殊字符，保持与docker默认行为一致（简单处理）
+                project_name = ''.join(c for c in project_name if c.isalnum() or c in '_-')
+
+            # --- 验证容器 ---
+            all_services = set(config_data.get("services", {}).keys())
+            
+            # 获取当前项目中正在运行的服务名称
+            # 使用 ps --services --filter "status=running" 
+            ps_cmd = ["docker", "compose", "-f", self.compose_file, "ps", "--services", "--filter", "status=running"]
+            ps_result = subprocess.run(ps_cmd, cwd=self.output_dir, capture_output=True, text=True, encoding='utf-8', check=True)
+            running_services = set(ps_result.stdout.strip().split("\n"))
+            if "" in running_services: running_services.remove("") # 清理空行
+
+            missing_containers = all_services - running_services
+            
+            if not missing_containers:
+                msg = f"✅ 容器验证通过：所有 {len(all_services)} 个服务均在运行。"
+                print(msg)
+                log_msgs.append(msg)
+            else:
+                is_success = False
+                msg = f"❌ 容器验证失败：以下 {len(missing_containers)} 个服务未运行: {', '.join(list(missing_containers)[:10])}..."
+                print(msg)
+                log_msgs.append(msg)
+
+            # --- 验证网络 ---
+            defined_networks = config_data.get("networks", {})
+            # 如果没有定义网络，docker compose 默认会创建一个 default 网络
+            expected_networks = []
+            
+            if not defined_networks:
+                expected_networks.append(f"{project_name}_default")
+            else:
+                for net_name, net_conf in defined_networks.items():
+                    # 检查是否是外部网络
+                    is_external = False
+                    if isinstance(net_conf, dict) and net_conf.get("external") is True:
+                        is_external = True
+                        # 如果指定了 name 属性，则使用该 name，否则使用 key
+                        ext_name = net_conf.get("name", net_name)
+                        expected_networks.append(ext_name)
+                    else:
+                        # 内部网络通常加前缀
+                        # 注意：不同版本Docker Compose对连接符处理可能不同，这里假设 standard
+                        expected_networks.append(f"{project_name}_{net_name}")
+
+            # 获取当前所有网络
+            net_ls_cmd = ["docker", "network", "ls", "--format", "{{.Name}}"]
+            net_result = subprocess.run(net_ls_cmd, capture_output=True, text=True, encoding='utf-8', check=True)
+            existing_networks = set(net_result.stdout.strip().split("\n"))
+
+            missing_networks = []
+            for net in expected_networks:
+                # 尝试模糊匹配，因为 sometimes project name separator differs (-)
+                if net not in existing_networks:
+                     # 尝试替换 _ 为 - 或者反之，应对不同版本 compose 的命名习惯
+                    alt_name = net.replace("_", "-")
+                    alt_name2 = net.replace("-", "_")
+                    if alt_name in existing_networks: continue
+                    if alt_name2 in existing_networks: continue
+                    missing_networks.append(net)
+
+            if not missing_networks:
+                msg = f"✅ 网络验证通过：所有预期网络 ({len(expected_networks)}个) 均存在。"
+                print(msg)
+                log_msgs.append(msg)
+            else:
+                is_success = False
+                msg = f"❌ 网络验证失败：未找到网络: {', '.join(missing_networks)}"
+                print(msg)
+                log_msgs.append(msg)
+
+            return is_success, "\n".join(log_msgs)
+
+        except Exception as e:
+            err_msg = f"验证过程发生异常: {str(e)}"
+            print(err_msg)
+            return False, err_msg
 
     def start(self):
         """启动命令并监控"""
@@ -221,56 +319,52 @@ class DockerCommandMonitor:
         print(f"正在后台执行命令...") 
         print(f"任务类型: {self.command_name}")
         print(f"监控日志: {self.log_path}")
-        print(f"命令输出日志: {self.cmd_output_path}") # 提示用户输出去哪了
-        print("终端将不再显示命令输出，以减少I/O。")
+        print("命令输出 (stdout/stderr): 已被丢弃 (DEVNULL)")
         print("=================================================")
         
         start_time = time.time()
         
-        # 打开一个文件用于保存命令输出
-        with open(self.cmd_output_path, 'w') as cmd_out_file:
-            # 记录开始时间
-            cmd_out_file.write(f"Command started at {datetime.now()}\n")
-            cmd_out_file.write(f"Command: {self.command}\n\n")
-            cmd_out_file.flush()
-
-            # --- 核心修改：stdout/stderr 重定向到文件 ---
-            self.process = subprocess.Popen(
-                self.command,
-                shell=True,
-                cwd=self.output_dir,
-                stdout=cmd_out_file,  # 不再是 sys.stdout
-                stderr=cmd_out_file,  # 不再是 sys.stderr
-                text=True,
-                preexec_fn=os.setsid
-            )
-            
-            self.running = True
-            # 立即执行一次统计作为初始状态
-            with open(self.log_path, 'a', encoding='utf-8') as f:
-                init_stat = self._get_docker_count()
-                f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]},{self.process.pid},0.00,0.00,0.00,{init_stat} (Initial)\n")
-
-            self._monitor_loop() # 开始循环监控
-            
-            self.process.wait() # 等待命令结束
-
-            # 记录结束时间
-            cmd_out_file.write(f"\nCommand finished at {datetime.now()} with return code {self.process.returncode}\n")
-
+        self.process = subprocess.Popen(
+            self.command,
+            shell=True,
+            cwd=self.output_dir,
+            stdout=subprocess.DEVNULL,  
+            stderr=subprocess.DEVNULL, 
+            text=True,
+            preexec_fn=os.setsid
+        )
         
+        self.running = True
+        # 初始统计
+        with open(self.log_path, 'a', encoding='utf-8') as f:
+            init_stat = self._get_docker_count()
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]},{self.process.pid},0.00,0.00,0.00,{init_stat} (Initial)\n")
+
+        self._monitor_loop() # 开始循环监控
+        
+        self.process.wait() # 等待命令结束
+
         end_time = time.time()
         
-        # 总结部分
+        # ----------------------------------------------------------------
+        # 总结与验证部分 (修改)
+        # ----------------------------------------------------------------
         main_return_code = self.process.returncode
         verification_passed = None
+        verification_details = ""
         
-        if self.command_name == "build":
-            print("\n任务结束，正在验证结果...")
-            if main_return_code == 0:
+        print("\n任务结束，正在执行最终验证...")
+
+        if main_return_code != 0:
+             verification_passed = False
+             verification_details = "主命令执行失败 (Return Code != 0)，跳过深度验证。"
+        else:
+            if self.command_name == "build":
                 verification_passed = self._verify_build_success()
-            else:
-                verification_passed = False
+                verification_details = "Build Verification Completed"
+            elif self.command_name == "up":
+                # 调用新的验证方法
+                verification_passed, verification_details = self._verify_up_success()
         
         duration = int(end_time - start_time)
         hours = duration // 3600
@@ -280,9 +374,11 @@ class DockerCommandMonitor:
         print("\n-------------------------------------")
         print("执行结束。")
         print(f"主命令返回码：{self.process.returncode}")
+        
+        status_text = "未知"
         if verification_passed is not None:
             status_text = "成功 ✅" if verification_passed else "失败 ❌"
-            print(f"镜像构建验证：{status_text}")
+        print(f"最终验证结果：{status_text}")
         print(f"Total runtime: {hours}h {minutes}m {seconds}s")
         print("=================================================")
         
@@ -291,9 +387,9 @@ class DockerCommandMonitor:
             with open(self.log_path, 'a', encoding='utf-8') as f:
                 f.write("\n\n--- 监控任务结束 ---\n")
                 f.write(f"主命令返回码: {self.process.returncode}\n")
-                if verification_passed is not None:
-                    status_text = "成功 ✅" if verification_passed else "失败 ❌"
-                    f.write(f"镜像构建验证: {status_text}\n")
+                f.write(f"最终验证结果: {status_text}\n")
+                if verification_details:
+                    f.write(f"验证详情:\n{verification_details}\n")
                 f.write(f"Total runtime: {hours}h {minutes}m {seconds}s\n")
                 f.write("----------------------------------\n")
         except Exception as e:
