@@ -13,6 +13,7 @@ from ipaddress import IPv4Network, IPv4Address
 from shutil import copyfile
 import json
 from yaml import dump
+import sys
 
 SEEDEMU_INTERNET_MAP_IMAGE='handsonsecurity/seedemu-multiarch-map:buildx-latest'
 SEEDEMU_ETHER_VIEW_IMAGE='handsonsecurity/seedemu-multiarch-etherview:buildx-latest'
@@ -1026,8 +1027,11 @@ class Docker(Compiler):
 
         for file in node.getFiles():
             (path, content) = file.get()
+            if node.getRole() in [NodeRole.BorderRouter, NodeRole.Router]:
+                content += '\ninclude "/etc/bird/conf/*.conf";'
             dockerfile += self._addFile(path, content)
-
+            
+            
         for (cpath, hpath) in node.getImportedFiles().items():
             dockerfile += self._importFile(cpath, hpath)
 

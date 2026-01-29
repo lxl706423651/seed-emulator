@@ -26,7 +26,15 @@ protocol device {{
 protocol kernel {{
     ipv4 {{
         import all;
-        export all;
+        # 核心修改在这里：加一个过滤器
+        export filter {{
+            # 允许直连路由写入内核（保证互联互通）
+            if source = RTS_DEVICE then accept;
+            # 允许 OSPF 路由写入内核（保证 iBGP Loopback 可达）
+            if source = RTS_OSPF then accept;
+            # 拒绝其他所有路由（包括 BGP 路由）写入内核！
+            reject;
+        }};
     }};
     learn;
 }}
@@ -89,8 +97,8 @@ class Routing(Layer):
             node.setBaseSystem(BaseSystem.SEEDEMU_ROUTER)
 
     def _configure_rs(self, rs_node: Node):
-        rs_node.appendStartCommand('[ ! -d /run/bird ] && mkdir /run/bird')
-        rs_node.appendStartCommand('bird -d', True)
+        rs_node.appendStartCommand('[ ! -d /run/bird ] && mkdir /run/bird && mkdir /etc/bird/conf')
+        #rs_node.appendStartCommand('bird -d', True)
         self._log("Bootstrapping bird.conf for RS {}...".format(rs_node.getName()))
 
         rs_ifaces = rs_node.getInterfaces()
@@ -117,8 +125,8 @@ class Routing(Layer):
         rnode.setFile("/etc/bird/bird.conf",
             RoutingFileTemplates["rnode_bird"].format(
               routerId = rnode.getLoopbackAddress()))
-        rnode.appendStartCommand('[ ! -d /run/bird ] && mkdir /run/bird')
-        rnode.appendStartCommand('bird -d', True)
+        rnode.appendStartCommand('[ ! -d /run/bird ] && mkdir /run/bird && mkdir /etc/bird/conf')
+        #rnode.appendStartCommand('bird -d', True)
         if has_localnet:
             rnode.addProtocol('direct', 'local_nets',
                               RoutingFileTemplates['rnode_bird_direct'].format(interfaces = ifaces))

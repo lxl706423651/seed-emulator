@@ -15,6 +15,10 @@ define PROVIDER_COMM = ({localAsn}, 3, 0);
 """
 
 EbgpFileTemplates["rs_bird_peer"] =  """
+    disabled;
+    #debug {{states,events,routes}};
+    hold time 36000;
+    keepalive time 60;
     ipv4 {{
         import all;
         export all;
@@ -25,6 +29,10 @@ EbgpFileTemplates["rs_bird_peer"] =  """
 """
 
 EbgpFileTemplates["rnode_bird_peer"] = """
+    disabled;
+    #debug {{states,events,routes}};
+    hold time 36000;
+    keepalive time 60;
     ipv4 {{
         table t_bgp;
         import filter {{
@@ -112,14 +120,14 @@ class Ebgp(Layer, Graphable):
         assert routerA != routerB, 'cannot peer with oneself.'
 
         if rsNode != None:
-            rsNode.addProtocol('bgp', 'p_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rs_bird_peer"].format(
+            rsNode.addProtocol('bgp', 'Ebgp_p_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rs_bird_peer"].format(
                 localAddress = addrA,
                 localAsn = rsNode.getAsn(),
                 peerAddress = addrB,
                 peerAsn = routerA.getAsn()
             ))
 
-            routerA.addProtocol('bgp', 'p_rs{}'.format(rsNode.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
+            routerA.addProtocol('bgp', 'Ebgp_p_rs{}'.format(rsNode.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
                 localAddress = addrB,
                 localAsn = routerA.getAsn(),
                 peerAddress = addrA,
@@ -132,7 +140,7 @@ class Ebgp(Layer, Graphable):
             return
 
         if rel == PeerRelationship.Peer:
-            routerA.addProtocol('bgp', 'p_as{}'.format(routerB.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
+            routerA.addProtocol('bgp', 'Ebgp_p_as{}'.format(routerB.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
                 localAddress = addrA,
                 localAsn = routerA.getAsn(),
                 peerAddress = addrB,
@@ -142,7 +150,7 @@ class Ebgp(Layer, Graphable):
                 bgpPref = 20
             ))
 
-            routerB.addProtocol('bgp', 'p_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
+            routerB.addProtocol('bgp', 'Ebgp_p_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
                 localAddress = addrB,
                 localAsn = routerB.getAsn(),
                 peerAddress = addrA,
@@ -153,7 +161,7 @@ class Ebgp(Layer, Graphable):
             ))
 
         if rel == PeerRelationship.Provider:
-            routerA.addProtocol('bgp', 'c_as{}'.format(routerB.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
+            routerA.addProtocol('bgp', 'Ebgp_c_as{}'.format(routerB.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
                 localAddress = addrA,
                 localAsn = routerA.getAsn(),
                 peerAddress = addrB,
@@ -163,7 +171,7 @@ class Ebgp(Layer, Graphable):
                 bgpPref = 30
             ))
 
-            routerB.addProtocol('bgp', 'u_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
+            routerB.addProtocol('bgp', 'Ebgp_u_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
                 localAddress = addrB,
                 localAsn = routerB.getAsn(),
                 peerAddress = addrA,
@@ -174,7 +182,7 @@ class Ebgp(Layer, Graphable):
             ))
 
         if rel == PeerRelationship.Unfiltered:
-            routerA.addProtocol('bgp', 'x_as{}'.format(routerB.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
+            routerA.addProtocol('bgp', 'Ebgp_x_as{}'.format(routerB.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
                 localAddress = addrA,
                 localAsn = routerA.getAsn(),
                 peerAddress = addrB,
@@ -184,7 +192,7 @@ class Ebgp(Layer, Graphable):
                 bgpPref = 30
             ))
 
-            routerB.addProtocol('bgp', 'x_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
+            routerB.addProtocol('bgp', 'Ebgp_x_as{}'.format(routerA.getAsn()), EbgpFileTemplates["rnode_bird_peer"].format(
                 localAddress = addrB,
                 localAsn = routerB.getAsn(),
                 peerAddress = addrA,

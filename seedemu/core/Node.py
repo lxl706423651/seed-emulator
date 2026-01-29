@@ -1134,14 +1134,31 @@ class Router(Node):
 
     __loopback_address: str
     __is_border_router: bool
-
+    __is_bgp_rr: bool
+    __bgp_cluster_id: str
     __extensions: Dict[str, RouterExtension]
 
     def __init__(self, name: str, role: NodeRole, asn: int, scope: str = None):
         self.__is_border_router = False
         self.__loopback_address = None
         self.__extensions = {}
+        self.__is_bgp_rr = False
+        self.__bgp_cluster_id = None
         super().__init__( name,role,asn,scope)
+    
+    def makeRouteReflector(self, is_rr: bool = True):
+        self.__is_bgp_rr = is_rr
+        return self
+    
+    def joinBgpCluster(self, cluster_id: str):
+        self.__bgp_cluster_id = cluster_id
+        return self
+    
+    def getBgpClusterId(self) -> str | None:
+        return self.__bgp_cluster_id
+    
+    def isRouteReflector(self) -> bool:
+        return self.__is_bgp_rr
 
     def hasExtension(self, name: str) -> bool:
         return name in self.__extensions
