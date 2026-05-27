@@ -48,94 +48,93 @@ class AutonomousSystem(Printable, Graphable, Configurable, Customizable):
         self.__clusters = {}
 
     def createCluster(self, address: str) -> 'AutonomousSystem':
-        """
-        显式注册一个 Cluster ID。
-        如果该 ID 已存在，则不做任何事；如果不存在，初始化为空集合。
+        """!
+        @brief Register an iBGP Route Reflector cluster ID for this AS.
+
+        The cluster is created as an empty RR/client membership set. Calling
+        this method with an existing cluster ID is idempotent.
+
+        @param address cluster ID rendered into BIRD's rr cluster id field.
+
+        @returns self, for chaining API calls.
         """
         if address not in self.__clusters:
-            # 初始化两个空的 Set：一个存 RR，一个存 Client
+            # Store Route Reflector names and client names separately.
             self.__clusters[address] = (set(), set())
             
         return self
+
     def _validate_cluster_integrity(self, data: Dict[str, Tuple[Set[str], Set[str]]]):
-        """
-        [修改后的校验逻辑]
-        规则更新：
-        1. 如果全网只有一个“活跃” Cluster，且该 Cluster 内没有 RR：
-           -> 判定为传统 Full Mesh 模式，合法，跳过检查。
-        2. 如果全网有多个 Cluster，或者只有一个 Cluster 但存在 RR：
-           -> 判定为 RR 模式，必须严格检查：
-              a. 每个 Cluster 必须有 RR（用于跨 Cluster 互联）。
-              b. 每个 Cluster 如果有 RR，必须有 Client（否则 RR 没有存在的意义）。
+        """!
+        @brief Validate aggregated Route Reflector cluster membership.
+
+        A single cluster without any RR is treated as the legacy full-mesh iBGP
+        topology. Multi-cluster topologies, or any topology containing an RR,
+        are treated as RR topologies and must satisfy the RR/client contract.
+
+        @param data mapping from cluster ID to a tuple of RR names and client
+        names.
         """
 
-        # 1. 特殊情况豁免：单 Cluster 且无 RR -> Full Mesh 模式
+        # A single non-RR cluster represents the legacy full-mesh mode.
         if len(data) == 1:
-            # 获取唯一的那个 Cluster 的数据
             cid, (rrs, clients) = list(data.items())[0]
             
-            # 如果没有 RR，说明这是纯 Client（Peer）集合，走 Full Mesh，合法！
+            # No RR means every router will be handled by the full-mesh renderer.
             if len(rrs) == 0:
                 return 
         
-        # 2. 常规严格检查 (适用于多 Cluster 场景，或单 Cluster RR 场景)
+        # RR mode requires every active cluster to have both roles.
         for cid, (rr_set, client_set) in data.items():
             
-            # 规则 A: 必须有 RR
-            # (在多 Cluster 架构中，没有 RR 的 Cluster 无法与其他 Cluster 通信)
+            # Each RR cluster needs an RR for client reflection and RR mesh.
             assert len(rr_set) > 0, (
                 f"[Topology Error] AS{self.__asn} Cluster '{cid}' is invalid: "
                 f"Missing Route Reflector! In a multi-cluster or RR topology, every cluster must have an RR."
             )
             
-            # 规则 B: 如果有 RR，必须有 Client
-            # (响应你之前的需求：有 RR 没 Client 要报错)
+            # A cluster with only RRs is invalid because no clients can use it.
             assert len(client_set) > 0, (
                 f"[Topology Error] AS{self.__asn} Cluster '{cid}' is invalid: "
                 f"Missing Clients! The Route Reflector {list(rr_set)} has no clients to serve."
             )
 
     def _aggregateBgpClusters(self):
+        """!
+        @brief Build Route Reflector cluster membership from AS and router state.
+
+        Explicitly registered clusters provide the allowed cluster IDs. Routers
+        that joined a cluster are assigned to that cluster, while routers
+        without an explicit cluster are assigned to the default cluster.
+
+        @returns mapping from cluster ID to a tuple of RR names and client names.
         """
-        聚合逻辑：
-        1. 获取显式定义的 clusters。
-        2. 遍历所有 Router，读取它们身上的配置。
-        3. 如果 Router 指定了 cluster_id，归入该 Cluster。
-        4. 如果 Router 没指定，归入缺省 Cluster (Default Cluster)。
-        """
-        # 步骤 A: 建立一个临时字典用于合并数据
-        # 这里先复制一份已有的显式配置
+        # Start from explicitly registered cluster IDs, then add router roles.
         merged_data = self.__clusters.copy()
 
-        # 辅助函数：确保 key 存在
+        # Cluster IDs must be registered before routers can join them.
         def ensure_key(cid):
             assert cid in merged_data, f"Cluster ID {cid} doesn't exists in Cluster!"
 
-        # 步骤 B: 生成缺省 Cluster ID (例如 0.0.0.0)
+        # Routers without explicit cluster membership use the legacy cluster.
         default_cluster_id = "10.0.0.0"
 
 
-        # 步骤 C: 遍历所有 Router，通过 Router 自身状态进行归类
+        # Classify each router by its RR flag and cluster membership.
         for router in self.__routers.values():
-            # 获取 Router 自身的设置
-            # 假设 Router 类有 getBgpClusterId() 和 isRouteReflector()
             r_cid = router.getBgpClusterId()
             is_rr = router.isRouteReflector()
             r_name = router.getName()
 
-            # 逻辑判定：
-            # 1. 如果 Router 设置了 cluster_id，就用它的。
-            # 2. 如果没设置，就归入缺省 Cluster。
             if r_cid is not None:
                 ensure_key(r_cid)
                 target_cid = r_cid
             else:
                 if default_cluster_id not in merged_data:
-                    # 初始化缺省 Cluster
+                    # Create the implicit full-mesh cluster on first use.
                     merged_data[default_cluster_id] = (set(), set())    
                 target_cid = default_cluster_id
 
-            # 加入对应的集合
             if is_rr:
                 merged_data[target_cid][0].add(r_name)
             else:

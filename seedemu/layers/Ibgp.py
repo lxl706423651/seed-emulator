@@ -21,7 +21,7 @@ IbgpFileTemplates['ibgp_peer'] = '''
     neighbor {peerAddress} as {asn};
 '''
 
-# 1. 普通 Peer 模板 (用于 Client->RR, RR<->RR, 或者 Full Mesh)
+# Standard iBGP peer template used for clients, RR mesh peers, and full mesh.
 IbgpFileTemplates['ibgp_client'] = '''
     disabled;
     #debug {{states,events}};
@@ -38,7 +38,7 @@ IbgpFileTemplates['ibgp_client'] = '''
     neighbor {peerAddress} as {asn};
 '''
 
-# 2. RR 服务端模板 (用于 RR->Client)
+# Route Reflector server-side template used for RR-to-client sessions.
 IbgpFileTemplates['ibgp_rr_server'] = '''
     disabled;
     #debug {{states,events}};
@@ -61,7 +61,8 @@ class Ibgp(Layer, Graphable):
     """!
     @brief The Ibgp (iBGP) layer.
 
-    This layer automatically setup full mesh peering between routers within AS.
+    This layer automatically sets up full-mesh iBGP or Route Reflector based
+    iBGP sessions between routers within each AS.
     """
     __masked: Set[int]
 
@@ -152,18 +153,22 @@ class Ibgp(Layer, Graphable):
                 self._render_full_mesh_mode(asn, routers)
     
     def _render_rr_mode(self, asn: int, clusters: Dict[str, Tuple[List[str], List[str]]], routers_map: Dict[str, Node]):
-        """ RR 模式渲染逻辑 """
+        """!
+        @brief Render Route Reflector based iBGP sessions for one AS.
+
+        @param asn AS number being rendered.
+        @param clusters mapping from cluster ID to RR names and client names.
+        @param routers_map mapping from router name to router node.
+        """
         self._log(f'setting up IBGP (Route Reflector) for as{asn}...')
 
-        # 用于收集全网所有 RR，做最后的互联
+        # Collect every RR so they can be connected through an RR full mesh.
         all_rr_names: Set[str] = set()
 
-        # --- A. 处理每个 Cluster 内部 (Hub-and-Spoke) ---
+        # Configure each cluster as a hub-and-spoke RR topology.
         for cluster_id, (rr_names, client_names) in clusters.items():
-            # 记录 RR
             all_rr_names.update(rr_names)
 
-            # 遍历该 Cluster 的所有 RR
             for rr_name in rr_names:
                 if rr_name not in routers_map: continue
                 rr_node = routers_map[rr_name]
@@ -172,7 +177,6 @@ class Ibgp(Layer, Graphable):
                 rr_node.addTablePipe('t_direct', 't_bgp')
                 laddr = rr_node.getLoopbackAddress()
 
-                # 遍历该 Cluster 的所有 Client
                 for client_name in client_names:
                     if client_name not in routers_map: continue
                     client_node = routers_map[client_name]
@@ -182,20 +186,19 @@ class Ibgp(Layer, Graphable):
                     client_node.addTablePipe('t_direct', 't_bgp')
                     raddr = client_node.getLoopbackAddress()
 
-                    # 1. 配置 RR 端 (Server: 开启反射)
+                    # The RR side enables route reflection for this client.
                     rr_node.addProtocol('bgp', f'Ibgp_to_cli_{client_name}', IbgpFileTemplates['ibgp_rr_server'].format(
                         localAddress=laddr, peerAddress=raddr, asn=asn, clusterId=cluster_id
                     ))
 
-                    # 2. 配置 Client 端 (Peer: 普通连接)
+                    # The client side uses a normal iBGP peer session to the RR.
                     client_node.addProtocol('bgp', f'Ibgp_to_rr_{rr_name}', IbgpFileTemplates['ibgp_client'].format(
                         localAddress=raddr, peerAddress=laddr, asn=asn
                     ))
                     
                     self._log(f'adding RR peering: {rr_name}(RR) <-> {client_name}(Client) cluster {cluster_id}')
 
-        # --- B. 处理 RR 之间的全互联 (RR Full Mesh) ---
-        # 获取所有 RR 节点并排序
+        # Connect all RRs with a normal full mesh so reflected routes propagate.
         sorted_rrs = sorted([routers_map[name] for name in all_rr_names if name in routers_map], key=lambda x: x.getName())
 
         for i in range(len(sorted_rrs)):
@@ -211,7 +214,7 @@ class Ibgp(Layer, Graphable):
                 node_b.addTablePipe('t_bgp')
                 node_b.addTablePipe('t_direct', 't_bgp')
 
-                # 双向建立普通 Peer 连接
+                # RR-to-RR sessions are normal bidirectional iBGP peer sessions.
                 node_a.addProtocol('bgp', f'Ibgp_mesh_{node_b.getName()}', IbgpFileTemplates['ibgp_peer'].format(
                     localAddress=node_a.getLoopbackAddress(), peerAddress=node_b.getLoopbackAddress(), asn=asn
                 ))
@@ -221,7 +224,12 @@ class Ibgp(Layer, Graphable):
                 self._log(f'adding RR Mesh: {node_a.getName()} <-> {node_b.getName()}')
 
     def _render_full_mesh_mode(self, asn: int, routers_list: List[Node]):
-        """ 原有的全互联逻辑 (保留 DFS) """
+        """!
+        @brief Render the legacy full-mesh iBGP sessions for one AS.
+
+        @param asn AS number being rendered.
+        @param routers_list routers participating in the legacy iBGP mesh.
+        """
         self._log(f'setting up IBGP (Full Mesh) for as{asn}...')
         
         for local in routers_list:
@@ -279,4 +287,3 @@ class Ibgp(Layer, Graphable):
             out += '{}\n'.format(asn)
 
         return out
-

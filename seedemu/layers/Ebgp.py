@@ -7,6 +7,9 @@ from enum import Enum
 
 EbgpFileTemplates: Dict[str, str] = {}
 
+# Keep the senior Ebgp_* protocol names stable: the K3s phased startup helper
+# enables eBGP sessions by matching this prefix at runtime.
+
 EbgpFileTemplates["bgp_commons"] = """\
 define LOCAL_COMM = ({localAsn}, 0, 0);
 define CUSTOMER_COMM = ({localAsn}, 1, 0);
@@ -15,10 +18,7 @@ define PROVIDER_COMM = ({localAsn}, 3, 0);
 """
 
 EbgpFileTemplates["rs_bird_peer"] =  """
-    disabled;
-    #debug {{states,events,routes}};
-    hold time 36000;
-    keepalive time 60;
+    #debug {{states}};
     ipv4 {{
         import all;
         export all;
@@ -29,10 +29,7 @@ EbgpFileTemplates["rs_bird_peer"] =  """
 """
 
 EbgpFileTemplates["rnode_bird_peer"] = """
-    disabled;
-    #debug {{states,events,routes}};
-    hold time 36000;
-    keepalive time 60;
+    #debug {{states}};
     ipv4 {{
         table t_bgp;
         import filter {{
@@ -113,6 +110,25 @@ class Ebgp(Layer, Graphable):
 
             # pipe direct routes to bgp, set LOCAL community, set pref 40
             node.addTablePipe('t_direct', 't_bgp', exportFilter = 'filter { bgp_large_community.add(LOCAL_COMM); bgp_local_pref = 40; accept; }')
+
+            # # Also export intra-AS OSPF link prefixes into t_bgp so edge routers
+            # # can advertise all net_* link subnets, not only their own directly
+            # # connected ones. The generated topologies use /24 for point-to-point
+            # # net_* links, while ix prefixes are /16 and loopbacks are /32.
+            # node.addTablePipe(
+            #     'master4',
+            #     't_bgp',
+            #     exportFilter = (
+            #         'filter { '
+            #         'if source = RTS_OSPF && net.len = 24 then { '
+            #         'bgp_large_community.add(LOCAL_COMM); '
+            #         'bgp_local_pref = 40; '
+            #         'accept; '
+            #         '} '
+            #         'reject; '
+            #         '}'
+            #     )
+            # )
 
 
 

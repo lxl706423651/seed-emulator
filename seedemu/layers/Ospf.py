@@ -4,19 +4,14 @@ from seedemu.core.enums import NetworkType
 from typing import Set, Dict, List, Tuple
 
 OspfFileTemplates: Dict[str, str] = {}
-    # spf {{
-    #     delay 30;
-    #     min_delay 30;
-    #     max_delay 120;
-    # }};
+
 OspfFileTemplates['ospf_body'] = """
     ipv4 {{
         table t_ospf;
         import all;
         export all;
     }};
-
-    tick 3;
+    tick 1;
 
     area 0 {{
 {interfaces}
@@ -24,7 +19,7 @@ OspfFileTemplates['ospf_body'] = """
 """
 
 OspfFileTemplates['ospf_interface'] = """\
-        interface "{interfaceName}" {{ hello 30; dead 36000; type pointopoint; retransmit 20;}};
+        interface "{interfaceName}" {{ hello 10; dead 40; type pointopoint; retransmit 20;}};
 """
 
 OspfFileTemplates['ospf_stub_interface'] = """\

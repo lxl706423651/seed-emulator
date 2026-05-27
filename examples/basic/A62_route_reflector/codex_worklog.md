@@ -1,0 +1,8 @@
+## 2026-05-27 13:42 - A62 Route Reflector Example
+
+- User intent: create a basic example for the new iBGP Route Reflector API and document how RR differs from the old full-mesh iBGP behavior.
+- Scope: added `examples/basic/A62_route_reflector/route_reflector.py`, `README.md`, and this worklog; generated and deployed `output/` for validation.
+- Changes: built AS62 with two BGP clusters, explicit `createCluster()`, `joinBgpCluster()`, and `makeRouteReflector()` calls; added two stub ASes with WebService hosts; added delayed `birdc enable all` startup commands because BGP templates are rendered disabled by default; changed AS62 internal links to point-to-point networks so the current OSPF template converges cleanly.
+- Commands: `conda run -n seedpy310 python -m py_compile examples/basic/A62_route_reflector/route_reflector.py` verified syntax; `PYTHONPATH=/home/lxl/seed-emulator conda run -n seedpy310 python route_reflector.py amd` rendered and compiled Docker Compose output; `DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose build` built images after BuildKit failed to resolve generated local hash images; `docker compose up -d` started the topology; `docker compose ps` confirmed containers were up.
+- Validation: checked generated BIRD configs for `rr client` and `rr cluster id`; `birdc show protocols` showed RR-client sessions and RR-RR mesh Established on both RR nodes; `birdc show route table t_bgp` on AS62 edge routers showed remote AS150/AS151 prefixes learned through iBGP/RR.
+- Notes: cross-AS `curl` timed out because the current `Routing.py` kernel export filter rejects BGP routes from Linux kernel installation; control-plane RR propagation is validated in BIRD `t_bgp`.
