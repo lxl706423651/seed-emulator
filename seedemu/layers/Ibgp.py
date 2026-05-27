@@ -7,10 +7,9 @@ from typing import List, Set, Dict, Tuple
 IbgpFileTemplates: Dict[str, str] = {}
 
 IbgpFileTemplates['ibgp_peer'] = '''
-    disabled;
-    #debug {{states,events}};
-    hold time 36000;
-    keepalive time 60;
+    # debug {{states,events}};
+    # hold time 36000;
+    # keepalive time 60;
     ipv4 {{
         table t_bgp;
         import all;
@@ -23,10 +22,9 @@ IbgpFileTemplates['ibgp_peer'] = '''
 
 # Standard iBGP peer template used for clients, RR mesh peers, and full mesh.
 IbgpFileTemplates['ibgp_client'] = '''
-    disabled;
-    #debug {{states,events}};
-    hold time 36000;
-    keepalive time 60;
+    # debug {{states,events}};
+    # hold time 36000;
+    # keepalive time 60;
     ipv4 {{
         table t_bgp;
         import all;
@@ -40,10 +38,9 @@ IbgpFileTemplates['ibgp_client'] = '''
 
 # Route Reflector server-side template used for RR-to-client sessions.
 IbgpFileTemplates['ibgp_rr_server'] = '''
-    disabled;
-    #debug {{states,events}};
-    hold time 36000;
-    keepalive time 60;
+    # debug {{states,events}};
+    # hold time 36000;
+    # keepalive time 60;
     passive yes;
     ipv4 {{
         table t_bgp;

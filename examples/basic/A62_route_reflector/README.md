@@ -1,150 +1,194 @@
-# Route Reflector iBGP
+# Route Reflector on Mini Internet
 
-这个例子展示如何在一个 AS 内使用 Route Reflector (RR) 代替原来的全互联 iBGP。拓扑中的 `AS62` 是 transit AS，连接 `AS150` 和 `AS151` 两个 stub AS。`AS62` 内部被拆成两个 iBGP cluster：
+这个例子基于 `examples/internet/B00_mini_internet/mini_internet.py` 的拓扑扩展 Route Reflector (RR) 配置。它保留 B00 的 IX、transit AS、stub AS 和 eBGP peering 结构，然后在不同 AS 内展示三种 iBGP 模式：
 
-- `10.62.0.1`: west cluster，`rr_west` 是 RR，`edge100` 和 `core_west` 是 client。
-- `10.62.0.2`: east cluster，`rr_east` 是 RR，`edge101` 和 `core_east` 是 client。
+- `AS2`: 不设置 RR，继续使用原来的 full-mesh iBGP。
+- `AS12`: 一个 cluster，一个 RR，展示单 RR 模式。
+- `AS3`: 两个 cluster，每个 cluster 一个 RR，展示多 RR 模式和 RR 之间的 mesh。
 
-`Ibgp` layer 在渲染时会发现 `AS62` 存在 RR，因此进入 RR 模式：cluster 内部只建立 client 到 RR 的 iBGP session，所有 RR 之间再建立普通 full-mesh iBGP session。
+## File Roles
+
+- `route_reflector.py`: 用户输入脚本。创建 mini Internet 拓扑，给指定 AS 添加 RR metadata，并生成 Docker Compose 输出。
+- `README.md`: 示例说明。解释拓扑、RR 配置方式、运行命令和验证命令。
+- `codex_worklog.md`: 变更记录。记录示例创建和验证过程。
+- `output/`: 生成输出。运行脚本后由 Docker compiler 覆盖生成，不需要手工编辑。
 
 ## Run
 
-建议在仓库根目录或本目录下使用 `seedpy310` conda 环境运行。脚本会在本目录生成 `output/`：
+建议使用 `seedpy310` conda 环境，从本目录运行：
 
 ```bash
 cd /home/lxl/seed-emulator/examples/basic/A62_route_reflector
 PYTHONPATH=/home/lxl/seed-emulator conda run -n seedpy310 python route_reflector.py amd
-cd output
+```
+
+脚本会生成 `output/`。如果需要部署：
+
+```bash
+cd /home/lxl/seed-emulator/examples/basic/A62_route_reflector/output
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose build
 docker compose up -d
 docker compose ps
 ```
 
-如果当前 Docker Compose/BuildKit 可以正确处理本地中间镜像，也可以直接运行 `docker compose build`。本环境中 BuildKit 会先解析本地哈希镜像名并尝试从 Docker Hub 拉取，所以推荐使用上面的传统 builder 命令。
+当前 Docker Compose/BuildKit 在这个项目的生成镜像上可能会先解析本地哈希镜像名并尝试从 Docker Hub 拉取，导致普通 `docker compose build` 失败。因此推荐使用上面的传统 builder 命令。
 
-```bash
-DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose build
-```
-
-启动后可以查看 RR 节点上的 BIRD 协议状态：
-
-```bash
-docker compose exec rnode_62_rr_west birdc show protocols
-docker compose exec rnode_62_rr_east birdc show protocols
-docker compose exec brdnode_62_edge100 birdc show route table t_bgp
-docker compose exec brdnode_62_edge101 birdc show route table t_bgp
-```
-
-因为当前路由模板中的 kernel export filter 不把 BGP 路由写入 Linux kernel，跨 AS `curl`/`ping` 不是这个例子的主要验证方式。这个例子重点验证 RR 控制面：RR-client session、RR-RR mesh session 是否 Established，以及对端 AS 前缀是否出现在 `t_bgp` 中。
-
-停止并清理运行中的容器：
+停止并清理容器：
 
 ```bash
 cd /home/lxl/seed-emulator/examples/basic/A62_route_reflector/output
 docker compose down
 ```
 
-## Create Layers
+## Base Topology
 
-这个例子使用以下 layers：
+示例沿用 B00 的 mini Internet 结构：
 
-- `Base`: 创建 AS、IX、router、host 和本地网络。
-- `Routing`: 给节点安装基础路由能力。
-- `Ebgp`: 建立 AS 之间的 eBGP peering。
-- `Ibgp`: 根据 router 上的 RR/cluster 配置渲染 AS 内 iBGP。
-- `Ospf`: 给 AS 内部网络建立 IGP 可达性，让 iBGP loopback neighbor 可以互通。
-- `WebService`: 在两个 stub AS 的 host 上安装简单 Web 服务，便于后续验证跨 AS 连通性。
+- IX: `100` 到 `105`。
+- Tier 1 transit AS: `AS2`、`AS3`、`AS4`。
+- Tier 2 transit AS: `AS11`、`AS12`。
+- Stub AS: `AS150`、`AS151`、`AS152`、`AS153`、`AS154`、`AS160`、`AS161`、`AS162`、`AS163`、`AS164`、`AS170`、`AS171`。
 
-## Create Clusters
+这些 AS 的 eBGP peering 和 B00 保持一致。RR 配置只影响 AS 内部 iBGP session 的生成方式，不改变 AS 间 eBGP 关系。
 
-RR cluster 先在 `AutonomousSystem` 上注册：
+## Full-Mesh Example
+
+`AS2` 不调用任何 RR API：
 
 ```python
-WEST_CLUSTER_ID = "10.62.0.1"
-EAST_CLUSTER_ID = "10.62.0.2"
-
-as62 = base.createAutonomousSystem(62)
-as62.createCluster(WEST_CLUSTER_ID)
-as62.createCluster(EAST_CLUSTER_ID)
+# AS2 keeps the B00 behavior and is rendered by Ibgp as legacy full mesh.
 ```
 
-`createCluster()` 只是注册 cluster ID。真正的成员关系来自 router 上的 `joinBgpCluster()` 和 `makeRouteReflector()`。
+`Ibgp.render()` 在聚合 cluster 时会看到 `AS2` 只有默认 cluster 且没有 RR，于是进入 `_render_full_mesh_mode()`。因此 `AS2` 内的 `r100`、`r101`、`r102`、`r105` 会按原逻辑建立 full-mesh iBGP。
 
-Cluster ID 会被写入 BIRD 配置中的 `rr cluster id`，所以建议使用 IPv4 地址形式的字符串，并且同一个 AS 内保持唯一。
+部署后可以检查：
 
-## Add RR and Clients
-
-普通 client router 只需要加入 cluster：
-
-```python
-as62.createRouter('edge100') \
-    .joinNetwork('ix100') \
-    .joinNetwork('net_west') \
-    .joinBgpCluster(WEST_CLUSTER_ID)
+```bash
+docker compose exec brdnode_2_r100 birdc show protocols
 ```
 
-RR router 需要先加入 cluster，然后标记为 RR：
+## One-RR Example
+
+`AS12` 有两个 router：`r101` 和 `r104`。示例注册一个 cluster，并把 `r101` 设置为 RR，`r104` 设置为 client：
 
 ```python
-as62.createRouter('rr_west') \
-    .joinNetwork('net_west') \
-    .joinNetwork('net_core') \
-    .joinBgpCluster(WEST_CLUSTER_ID) \
+AS12_CLUSTER_ID = "10.12.0.1"
+
+as12 = base.getAutonomousSystem(12)
+as12.createCluster(AS12_CLUSTER_ID)
+
+as12.getRouter('r101') \
+    .joinBgpCluster(AS12_CLUSTER_ID) \
     .makeRouteReflector()
+
+as12.getRouter('r104') \
+    .joinBgpCluster(AS12_CLUSTER_ID)
 ```
 
-`makeRouteReflector()` 默认参数是 `True`，也可以显式传入 `False` 取消 RR 标记：
+渲染结果：
+
+- `r101` 使用 `ibgp_rr_server` 模板，对 `r104` 开启 `rr client` 和 `rr cluster id 10.12.0.1`。
+- `r104` 使用 `ibgp_client` 模板连接到 `r101`。
+
+部署后可以检查：
+
+```bash
+docker compose exec brdnode_12_r101 birdc show protocols
+docker compose exec brdnode_12_r101 grep -n "rr cluster id" /etc/bird/bird.conf
+```
+
+## Two-RR Example
+
+`AS3` 有四个 router：`r100`、`r103`、`r104`、`r105`。示例创建两个 cluster：
+
+- `10.3.0.1`: `r100` 是 RR，`r105` 是 client。
+- `10.3.0.2`: `r103` 是 RR，`r104` 是 client。
+
+配置代码：
 
 ```python
-router.makeRouteReflector(False)
+AS3_WEST_CLUSTER_ID = "10.3.0.1"
+AS3_EAST_CLUSTER_ID = "10.3.0.2"
+
+as3 = base.getAutonomousSystem(3)
+as3.createCluster(AS3_WEST_CLUSTER_ID)
+as3.createCluster(AS3_EAST_CLUSTER_ID)
+
+as3.getRouter('r100') \
+    .joinBgpCluster(AS3_WEST_CLUSTER_ID) \
+    .makeRouteReflector()
+
+as3.getRouter('r105') \
+    .joinBgpCluster(AS3_WEST_CLUSTER_ID)
+
+as3.getRouter('r103') \
+    .joinBgpCluster(AS3_EAST_CLUSTER_ID) \
+    .makeRouteReflector()
+
+as3.getRouter('r104') \
+    .joinBgpCluster(AS3_EAST_CLUSTER_ID)
 ```
 
-## Validation Rules
+渲染结果：
 
-当前 RR 聚合逻辑在 `Ibgp.render()` 中调用 `AutonomousSystem._aggregateBgpClusters()`，它会从 AS 内所有 router 读取：
+- cluster 内部建立 RR-client session。
+- `r100` 和 `r103` 作为所有 RR 集合的一部分，被 `_render_rr_mode()` 自动建立普通 iBGP mesh。
 
-- `getBgpClusterId()`
-- `isRouteReflector()`
+部署后可以检查：
 
-然后合并出 `cluster_id -> (rr_set, client_set)`。
-
-需要注意这些规则：
-
-- `joinBgpCluster(cluster_id)` 使用的 cluster ID 必须已经由 `createCluster(cluster_id)` 注册。
-- 如果一个 AS 只有一个 cluster，并且没有任何 RR，`Ibgp` 会保留原来的 full-mesh 模式。
-- 如果存在 RR，或者一个 AS 中出现多个 cluster，则进入 RR 模式。
-- RR 模式下每个 cluster 必须至少有一个 RR。
-- RR 模式下每个有 RR 的 cluster 也必须至少有一个 client。
-- 未调用 `joinBgpCluster()` 的 router 会被放入默认 cluster `10.0.0.0`。在 RR 拓扑中建议给所有 router 显式设置 cluster，否则默认 cluster 可能因为没有 RR 而触发校验失败。
-
-## Difference From Full Mesh
-
-以前的 `Ibgp` 行为是：在一个 AS 内自动发现所有 router，然后让每个 router 和其他 router 建立 iBGP session。对于 `N` 个 router，session 数量大约是 `N * (N - 1) / 2`。
-
-RR 模式下的行为是：
-
-- client 只和自己 cluster 内的 RR 建立 iBGP session。
-- RR 对 client 使用 `ibgp_rr_server` 模板，包含 `rr client` 和 `rr cluster id`。
-- client 对 RR 使用 `ibgp_client` 模板。
-- RR 与 RR 之间使用普通 `ibgp_peer` 模板做 full mesh。
-
-在这个例子中，`AS62` 有 6 个 router。原 full-mesh 需要 15 条 router-pair session；RR 模式只需要：
-
-- west cluster: `rr_west` 到 `edge100`、`core_west`
-- east cluster: `rr_east` 到 `edge101`、`core_east`
-- RR mesh: `rr_west` 到 `rr_east`
-
-总共 5 条 router-pair session，配置规模明显更小。
-
-## Topology Summary
-
-`AS62` 的内部网络如下。每条内部链路都单独使用一个两路由网络，以匹配当前 `Ospf` layer 的 point-to-point 接口模板：
-
-```text
-AS150 -- IX100 -- edge100 -- net_w_edge -- rr_west -- net_rr -- rr_east -- net_e_edge -- edge101 -- IX101 -- AS151
-                                      \                      /
-                                   core_west             core_east
-                                  net_w_core             net_e_core
+```bash
+docker compose exec brdnode_3_r100 birdc show protocols
+docker compose exec brdnode_3_r103 birdc show protocols
+docker compose exec brdnode_3_r100 grep -n "Ibgp_mesh" /etc/bird/bird.conf
 ```
 
-`AS150` 和 `AS151` 通过 eBGP 把各自前缀通告给 `AS62`。`AS62` 内部用 OSPF 保证 loopback 可达，再用 RR iBGP 在两个 cluster 之间传播 BGP 路由。
+## API Rules
+
+使用 RR 时需要遵守这些规则：
+
+- 先在 AS 上调用 `createCluster(cluster_id)` 注册 cluster。
+- 再在 router 上调用 `joinBgpCluster(cluster_id)` 加入 cluster。
+- RR router 额外调用 `makeRouteReflector()`。
+- 在一个启用 RR 的 AS 中，每个 cluster 必须至少有一个 RR 和一个 client。
+- 如果 AS 里有多个 cluster，所有 router 都应显式加入某个 cluster，避免被放入默认 cluster 后触发校验失败。
+- 如果 AS 没有任何 RR，并且只有默认 cluster，`Ibgp` 会保持原 full-mesh 行为。
+
+## Validation
+
+编译前先做语法检查：
+
+```bash
+cd /home/lxl/seed-emulator
+conda run -n seedpy310 python -m py_compile examples/basic/A62_route_reflector/route_reflector.py
+```
+
+生成输出：
+
+```bash
+cd /home/lxl/seed-emulator/examples/basic/A62_route_reflector
+PYTHONPATH=/home/lxl/seed-emulator conda run -n seedpy310 python route_reflector.py amd
+```
+
+不部署也可以直接检查生成的 BIRD 配置：
+
+```bash
+rg -n "rr client|rr cluster id|Ibgp_mesh|protocol bgp Ibgp" output/brdnode_2_r100 output/brdnode_3_r100 output/brdnode_3_r103 output/brdnode_12_r101
+```
+
+部署后建议以控制面为主验证：
+
+```bash
+docker compose exec brdnode_12_r101 birdc show protocols
+docker compose exec brdnode_3_r100 birdc show protocols
+docker compose exec brdnode_3_r103 birdc show protocols
+```
+
+当前 BGP 模板默认包含 `disabled;`，本例不会在启动脚本里自动执行 `birdc enable all`。如果部署后要让 session 真正建立，可以进入对应 router 容器手动执行：
+
+```bash
+docker compose exec brdnode_12_r101 birdc enable all
+docker compose exec brdnode_3_r100 birdc enable all
+docker compose exec brdnode_3_r103 birdc enable all
+```
+
+如果当前路由模板仍然限制 BGP route 写入 Linux kernel，跨 AS `ping` 或 `curl` 可能不能代表 RR 控制面是否正确。这个例子重点验证的是 BIRD 配置和 iBGP session 生成方式。
